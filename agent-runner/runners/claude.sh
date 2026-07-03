@@ -9,7 +9,19 @@ cd "$1"
 SKILL="goal"
 [ "${FRESH:-0}" = "1" ] && SKILL="bootstrap"
 
-FLAGS=(--permission-mode dontAsk)
+# claude-settings.json + guard-hook.sh: guardrails for this unattended run (no
+# nuking the repo, no flipping an existing repo's visibility, no reading secrets;
+# installing new interpreters/tools IS allowed, including via sudo for
+# package-manager commands). guard-hook.sh's path is injected here rather than
+# baked into claude-settings.json since it differs between the VPS
+# (~/agent-runner/runners) and the Docker/Railway image (/app/agent-runner/runners).
+# See README.md "Safety & cost".
+RUNNER_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+SETTINGS="$(jq --arg hook "$RUNNER_DIR/guard-hook.sh" \
+  '.hooks.PreToolUse = [{"matcher":"Bash","hooks":[{"type":"command","command":$hook}]}]' \
+  "$RUNNER_DIR/claude-settings.json")"
+
+FLAGS=(--permission-mode dontAsk --settings "$SETTINGS")
 [ -n "${MODEL:-}" ] && FLAGS+=(--model "$MODEL")
 [ -n "${EFFORT:-}" ] && FLAGS+=(--effort "$EFFORT")
 

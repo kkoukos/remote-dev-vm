@@ -26,8 +26,14 @@ LOG_DIR="$HOME/goal-logs"
 LOG="$LOG_DIR/$SESSION.log"
 mkdir -p "$LOG_DIR"
 
+# Same guardrails as agent-runner/runners/claude.sh — see README.md "Safety & cost".
+RUNNER_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/agent-runner/runners" && pwd)"
+SETTINGS="$(jq --arg hook "$RUNNER_DIR/guard-hook.sh" \
+  '.hooks.PreToolUse = [{"matcher":"Bash","hooks":[{"type":"command","command":$hook}]}]' \
+  "$RUNNER_DIR/claude-settings.json")"
+
 # --permission-mode dontAsk: fully unattended. Only use on a dedicated VM.
-CMD=$(printf 'claude -p %q --permission-mode dontAsk 2>&1 | tee %q' "/goal $GOAL" "$LOG")
+CMD=$(printf 'claude -p %q --permission-mode dontAsk --settings %q 2>&1 | tee %q' "/goal $GOAL" "$SETTINGS" "$LOG")
 
 tmux new-session -d -s "$SESSION" -c "$REPO_DIR" "$CMD"
 
