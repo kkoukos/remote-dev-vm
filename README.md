@@ -1,4 +1,10 @@
+![Claude Dev VM banner](public/banner.png)
+
 # Claude Dev VM
+
+> **tl;dr:** a lil server that codes for you fr. yeet it a feature idea from your phone
+> at 2am, it locks in, ships the code, and drops a PR — no cap. it never merges on its
+> own tho, that's on you bestie. 💅
 
 A 24/7 cloud VM that runs coding agents for you: send it a goal or a full plan — from
 VS Code, from Claude Cowork, from your phone, from any agent — and it implements the
@@ -29,9 +35,13 @@ skills/bootstrap/SKILL.md  the /bootstrap skill — empty repo → working v1
 agent-runner/           job server, runners, issue poller
 agent-runner/tokens-cli.mjs  mint/list/revoke per-caller API tokens (run on the VM)
 agent-runner/set-env.mjs     safely rewrite known .env keys (called remotely by vm-cli.mjs)
+agent-runner/runners/claude-settings.json  guardrails for unattended claude runs (see Safety & cost)
+agent-runner/runners/guard-hook.sh         PreToolUse hook backing those guardrails
 ```
 
 ## Setup (once)
+
+> No VPS? The control plane also runs on Railway — see [DEPLOY_RAILWAY.md](DEPLOY_RAILWAY.md).
 
 ```bash
 # 1. On a fresh Ubuntu 24.04 VPS, as root:
@@ -203,6 +213,26 @@ use the `/goal` or `/bootstrap` skills.
   *what a running job can do*. For real containment, run jobs under a separate
   non-sudo system user, or use Anthropic's reference devcontainer (default-deny
   firewall): code.claude.com/docs/en/devcontainer.
+- **Runner guardrails** (`agent-runner/runners/claude-settings.json` +
+  `guard-hook.sh`, loaded by `claude.sh` and `run-goal.sh` via `--settings`) block
+  the highest-blast-radius actions regardless of goal wording: recursive
+  force-delete (`rm -rf` and reordered/long-flag variants), destructive git history
+  rewrites (`reset --hard`, `push --force`, `branch -D`, `clean -f`), flipping an
+  *existing* repo's visibility or deleting it (`gh repo edit --visibility public`,
+  `gh repo delete` — `gh repo create --public` for a brand-new 0→1 repo is
+  intentionally still allowed), and reading `.env*`/Doppler/SSH/AWS secrets or
+  dumping the process environment. Installing new interpreters/tools (python,
+  node versions, global libraries, etc.) is deliberately **allowed**, including
+  via `apt`/`yum`/`dnf`/`snap`/`dpkg`/`npm`/`pip` install commands run under
+  `sudo` — `sudo` is scoped to those install invocations specifically, so it
+  still can't be used for `rm`, `cat`, `bash`, `su`, or anything else outside
+  that allowlist. This is regex-based defense-in-depth on top of
+  `permissions.deny` (which is enforced regardless of permission mode), not a
+  sandbox — a sufficiently adversarial prompt could still find phrasing that
+  slips past it, and a scoped-but-real `sudo` plus arbitrary package installs is
+  itself meaningful attack surface if a goal is ever adversarial (e.g. a
+  malicious GitHub issue on a repo with outside collaborators). For untrusted
+  input, use the devcontainer above instead.
 - Nothing merges: protect `main` with branch protection; the `/goal` skill and runner
   prompts forbid merging. `/bootstrap` pushes directly to `main` only for a repo's
   literal first commit (nothing to protect yet), then defers to `/goal`.

@@ -3,7 +3,7 @@
 // Accepts plans/goals over HTTP, executes them with a pluggable runner
 // (claude, codex, opencode, ...), tracks status + logs.
 //
-// Env: AGENT_RUNNER_DATA (~/agent-runner-data), PORT (7777), REPOS_DIR (~/repos)
+// Env: AGENT_RUNNER_DATA (~/agent-runner-data), PORT (7777), HOST (127.0.0.1), REPOS_DIR (~/repos)
 //
 // Auth: named, per-caller bearer tokens (see tokens-cli.mjs), each scoped to a
 // set of repo names ("*" for all). There is no single shared secret — mint one
@@ -268,4 +268,5 @@ const server = http.createServer(async (req, res) => {
   }
 });
 
-server.listen(PORT, "127.0.0.1", () => console.log(`agent-runner listening on 127.0.0.1:${PORT}`));
+const HOST = process.env.HOST || "127.0.0.1"; // 0.0.0.0 for PaaS (Railway etc.) where a proxy fronts the container
+server.listen(PORT, HOST, () => console.log(`agent-runner listening on ${HOST}:${PORT}`));
