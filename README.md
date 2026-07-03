@@ -1,0 +1,212 @@
+# Claude Dev VM
+
+A 24/7 cloud VM that runs coding agents for you: send it a goal or a full plan — from
+VS Code, from Claude Cowork, from your phone, from any agent — and it implements the
+feature and opens a GitHub PR. Never merges. Agents are pluggable (Claude Code today,
+Codex/OpenCode/whatever tomorrow). Can also go from nothing — `create:true` makes a
+brand-new GitHub repo and builds a working v1 into it (see [0→1](#0-1-new-products)).
+
+## Architecture
+
+```
+ you / Cowork / any agent
+   │
+   ├─ HTTP API ────────────► agent-runner (port 7777) ──► runners/claude.sh ─► /goal ─► PR
+   ├─ GitHub issue ───────►  issue-poller (1-min timer) ──┘        codex.sh
+   ├─ VS Code Remote Tunnel ► local VS Code attach + Live Share    opencode.sh
+   ├─ code-server ─────────► VS Code in any browser
+   └─ ssh / run-goal.sh ───► manual & detached runs
+```
+
+```
+provision.sh            fresh Ubuntu 24.04 → dev box (node, gh, code-server, Claude Code)
+setup-agent-runner.sh   control plane: HTTP API + issue queue + token store (systemd)
+setup-tunnel.sh         VS Code Remote Tunnel → local VS Code attach + Live Share
+run-goal.sh             manual detached run via tmux
+vm-cli.mjs              LOCAL cli (runs on your laptop) — configure + mint tokens over ssh
+skills/goal/SKILL.md    the /goal skill — existing repo, feature → PR
+skills/bootstrap/SKILL.md  the /bootstrap skill — empty repo → working v1
+agent-runner/           job server, runners, issue poller
+agent-runner/tokens-cli.mjs  mint/list/revoke per-caller API tokens (run on the VM)
+agent-runner/set-env.mjs     safely rewrite known .env keys (called remotely by vm-cli.mjs)
+```
+
+## Setup (once)
+
+```bash
+# 1. On a fresh Ubuntu 24.04 VPS, as root:
+DOMAIN=code.example.com bash provision.sh        # DOMAIN optional
+
+# 2. As dev — authenticate:
+claude                    # or: claude setup-token → export CLAUDE_CODE_OAUTH_TOKEN=...
+gh auth login && gh auth setup-git
+git config --global user.name "Kostas" && git config --global user.email kostas@domicode.gr
+
+# 3. Install /goal and /bootstrap globally:
+mkdir -p ~/.claude/skills/goal ~/.claude/skills/bootstrap
+cp skills/goal/SKILL.md ~/.claude/skills/goal/
+cp skills/bootstrap/SKILL.md ~/.claude/skills/bootstrap/
+
+# 4. Control plane + tunnel:
+bash setup-agent-runner.sh      # prints an admin token (see Auth & tokens below)
+bash setup-tunnel.sh            # GitHub device-flow login
+```
+
+### From your laptop — vm-cli.mjs
+
+`setup-agent-runner.sh` leaves `REPOS_DIR` / `REPOS` / `RUNNER` in `~/agent-runner/.env`
+with their defaults, and minting more tokens means SSHing in each time. `vm-cli.mjs`
+runs locally on your own machine and does both over plain ssh — same access you already
+used to provision the box, no new open port:
+
+```bash
+./vm-cli.mjs connect dev@vps.example.com --name prod   # save + select the host
+./vm-cli.mjs configure                                 # prompts for REPOS_DIR / REPOS / RUNNER, restarts the service
+./vm-cli.mjs tokens add --name cowork --repos my-app,other-app
+./vm-cli.mjs status                                     # current config + service health
+```
+
+It only ever touches the allowlisted config keys (`REPOS_DIR`, `REPOS`, `RUNNER`, `PORT`,
+`MAX_CONCURRENT_PER_TOKEN`) via `agent-runner/set-env.mjs` on the remote end — it can't
+read or overwrite `AGENT_RUNNER_TOKEN` or anything else in `.env`. `connect --name` lets
+you juggle multiple boxes; `use <name>` switches the default, or pass `--host <name>` per
+command.
+
+## Controlling it
+
+### From VS Code
+
+- **Local VS Code**: Remote Explorer → Tunnels → `claude-vm`. Full marketplace, and
+  **Live Share works from here** — start a session in the attached window; it's hosted
+  on the VM and outlives your laptop.
+- **Browser**: code-server at your domain (or `ssh -L 8080:127.0.0.1:8080 dev@vps` →
+  localhost:8080), or `vscode.dev/tunnel/claude-vm`.
+- In either, open a terminal: `claude` → `/goal ...`, or `./run-goal.sh <repo> "<goal>"`
+  for a detached run.
+
+### Auth & tokens
+
+There is no single shared secret. `setup-agent-runner.sh` mints one **admin** token
+(scoped to all repos, `*`) and prints it once. From there, mint a separate named token
+per caller — Cowork, your phone, CI, a teammate — each independently revocable and
+scoped to only the repos it needs:
+
+```bash
+node ~/agent-runner/tokens-cli.mjs add --name cowork --repos "my-app,other-app"
+node ~/agent-runner/tokens-cli.mjs add --name phone --repos "*" --expires-days 90
+node ~/agent-runner/tokens-cli.mjs list
+node ~/agent-runner/tokens-cli.mjs revoke --name cowork
+```
+
+Run those from your laptop instead via `./vm-cli.mjs tokens add|list|revoke ...` (see
+[vm-cli.mjs](#from-your-laptop--vm-climjs)) — same commands, no SSH session to keep open.
+
+Only a hash of each token is stored (`~/agent-runner-data/tokens.json`) — the plaintext
+is shown once at mint time and can't be recovered, only replaced. A token can only see,
+start, or cancel jobs against repos in its own scope; every job start/cancel and every
+rejected request is appended to `~/agent-runner-data/audit.log`.
+
+### From Claude Cowork or any agent — HTTP API
+
+```bash
+curl -H "Authorization: Bearer $TOKEN" -X POST https://code.example.com/agent/jobs \
+  -d '{"repo":"my-app","goal":"<one-liner OR full multi-line plan markdown>","runner":"claude"}'
+
+curl -H "Authorization: Bearer $TOKEN" https://code.example.com/agent/jobs          # list (scoped to this token)
+curl -H "Authorization: Bearer $TOKEN" https://code.example.com/agent/jobs/<id>     # status + prUrl + log tail
+curl -H "Authorization: Bearer $TOKEN" -X POST .../jobs/<id>/cancel
+```
+
+`repo` is a **bare name** (no slashes, no `~`), always resolved under `REPOS_DIR`
+(`~/repos` by default, set in `.env`) — a job can never target a path outside it.
+`goal` accepts a full plan — so in Cowork just say: _"POST this plan to my VM at
+https://code.example.com/agent/jobs with token X, repo my-app"_. Add `gitUrl` to
+auto-clone if the repo isn't on the VM yet, or `"create":true` to make a brand-new
+GitHub repo instead (see 0→1 below). Add `"model"` / `"effort"` to control strength —
+see [Choosing model & effort](#choosing-model--effort).
+
+Only one job per repo runs at a time (a second request against a busy repo is
+rejected, so two agents never race on the same git working tree), and each token is
+capped at `MAX_CONCURRENT_PER_TOKEN` (default 5) concurrent jobs.
+
+The API listens on 127.0.0.1 only. To expose it, add to `/etc/caddy/Caddyfile`
+(inside your site block) and `systemctl reload caddy`:
+
+```
+handle_path /agent/* {
+    reverse_proxy 127.0.0.1:7777
+}
+```
+
+No domain? Use an SSH tunnel: `ssh -L 7777:127.0.0.1:7777 dev@vps`.
+
+### From anywhere — GitHub issue queue
+
+Set `REPOS="you/repo1 you/repo2"` in `~/agent-runner/.env` on the VM. Then from any
+device or agent with GitHub access:
+
+```bash
+gh issue create -R you/repo1 --label agent-goal \
+  --title "Add password reset" --body "<optional detailed plan>"
+```
+
+Within a minute the VM picks it up, comments "started", runs the job, and comments
+back the PR link. Free audit trail on the issue. The poller uses its own dedicated
+`issue-poller` token (minted at setup, stored in `.env`) — revoke/rotate it
+independently of any other caller's token.
+
+## 0→1: new products
+
+Point a job at a repo name that doesn't exist yet and pass `"create":true` — the
+server runs `gh repo create` (private by default) instead of cloning, then hands the
+job to `/bootstrap` instead of `/goal`, which scaffolds a real stack, implements a
+working v1, and pushes straight to `main` (there's nothing to protect yet — no PR for
+the very first commit). Every job after that on the same repo goes through the normal
+`/goal` flow: branch, implement, PR.
+
+```bash
+curl -H "Authorization: Bearer $TOKEN" -X POST https://code.example.com/agent/jobs \
+  -d '{"repo":"new-app","create":true,"goal":"a Next.js waitlist landing page with email capture"}'
+```
+
+Optional fields: `"visibility"` (`private` default, or `public`/`internal`), `"owner"`
+(create under a GitHub org instead of your personal account). `create` and `gitUrl`
+are mutually exclusive — use `create` for a product that doesn't exist anywhere yet,
+`gitUrl` to bring an existing repo onto the VM.
+
+## Choosing model & effort
+
+Pass `"model"` (`opus`/`sonnet`/`haiku`, or a full ID like `claude-opus-4-8`) and
+`"effort"` (`low`/`medium`/`high`/`xhigh`/`max`, availability depends on the model) in
+the job body — `claude.sh` forwards them straight to `claude -p` as `--model`/`--effort`.
+Match strength to the task: a one-line fix is fine on `sonnet`/`low`; an architecture
+change or a `/bootstrap` job benefits from `opus`/`high`. Omit either to use your
+account's configured default.
+
+## Swapping agents
+
+Runners are shell scripts in `~/agent-runner/runners/`. `claude.sh` is the default;
+`codex.sh` and `opencode.sh` are ready templates (their `--model` flag is an unverified
+convention — check `--help` on your installed version). Add `mytool.sh` (args:
+repo-dir, prompt-file; reads `$FRESH`/`$MODEL`/`$EFFORT` from the environment) and pass
+`"runner":"mytool"` per job — or set `RUNNER=` in `.env` for the issue queue.
+Non-Claude runners embed the PR/bootstrap instructions in the prompt since they can't
+use the `/goal` or `/bootstrap` skills.
+
+## Safety & cost
+
+- Jobs run with `--permission-mode dontAsk` — fine on a dedicated VM, don't do it
+  on your laptop. This is a much bigger deal than it sounds: `provision.sh` gives the
+  dev user **passwordless sudo**, so a job (or a malicious/mistaken goal) has the same
+  reach as anything you could type over SSH, not just the repo it's pointed at. Token
+  scoping controls *who can submit a job and against which repo*; it does not sandbox
+  *what a running job can do*. For real containment, run jobs under a separate
+  non-sudo system user, or use Anthropic's reference devcontainer (default-deny
+  firewall): code.claude.com/docs/en/devcontainer.
+- Nothing merges: protect `main` with branch protection; the `/goal` skill and runner
+  prompts forbid merging. `/bootstrap` pushes directly to `main` only for a repo's
+  literal first commit (nothing to protect yet), then defers to `/goal`.
+- Tokens are scoped and individually revocable (see Auth & tokens) — mint one per
+  caller instead of sharing. `audit.log` records who started/cancelled what.
+- Headless `claude -p` bills against the separate Agent SDK credit pool (Pro/Max,
+  since June 2026).
