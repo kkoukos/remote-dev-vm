@@ -27,12 +27,14 @@ brand-new GitHub repo and builds a working v1 into it (see [0→1](#0-1-new-prod
 ```
 provision.sh            fresh Ubuntu 24.04 → dev box (node, gh, code-server, Claude Code)
 setup-agent-runner.sh   control plane: HTTP API + issue queue + token store (systemd)
+setup-self-update.sh    self-updater: separate systemd timer that git-pulls + redeploys
 setup-tunnel.sh         VS Code Remote Tunnel → local VS Code attach + Live Share
 run-goal.sh             manual detached run via tmux
 vm-cli.mjs              LOCAL cli (runs on your laptop) — configure + mint tokens over ssh
 skills/goal/SKILL.md    the /goal skill — existing repo, feature → PR
 skills/bootstrap/SKILL.md  the /bootstrap skill — empty repo → working v1
 agent-runner/           job server, runners, issue poller
+agent-runner/self-update.sh  pull-based self-updater (git pull + redeploy + restart)
 agent-runner/tokens-cli.mjs  mint/list/revoke per-caller API tokens (run on the VM)
 agent-runner/set-env.mjs     safely rewrite known .env keys (called remotely by vm-cli.mjs)
 agent-runner/runners/claude-settings.json  guardrails for unattended claude runs (see Safety & cost)
@@ -204,6 +206,44 @@ repo-dir, prompt-file; reads `$FRESH`/`$MODEL`/`$EFFORT` from the environment) a
 `"runner":"mytool"` per job — or set `RUNNER=` in `.env` for the issue queue.
 Non-Claude runners embed the PR/bootstrap instructions in the prompt since they can't
 use the `/goal` or `/bootstrap` skills.
+
+## Self-updating
+
+The box updates itself from this very repo. `setup-agent-runner.sh` installs a
+**separate** systemd timer — `agent-selfupdate.timer` — that every ~2 min runs
+`agent-runner/self-update.sh`: it `git fetch`es the source checkout, and if
+`origin/main` is a fast-forward ahead, pulls it, redeploys the code into
+`~/agent-runner` (preserving `.env`), restarts `agent-runner.service`, and
+health-checks it. So the normal loop is: point the VM at its own repo with
+`/goal`, review the PR, **merge it**, and within a couple minutes the box is
+running the new code — it maintains itself.
+
+The updater is deliberately **not** part of the server, and that separation is
+the entire point. The main server has `Restart=always`; if a bad commit crashes
+it, it just crash-loops — and a webhook or update endpoint *inside* the server
+would be down right along with it, unable to pull the fix. The self-updater is
+an independent oneshot on its own timer, so it keeps polling regardless of the
+server's health: push a fix, the next tick pulls and redeploys it, and the box
+self-heals. For that reason it only ever moves **forward** (fast-forward only,
+never a rollback or history rewrite) — rolling back would just re-pull and
+re-crash on the same commit next tick.
+
+```bash
+# Installed automatically by setup-agent-runner.sh. To (re)install or retune:
+SELF_UPDATE_INTERVAL=300 SELF_UPDATE_BRANCH=main bash setup-self-update.sh
+SELF_UPDATE=0 bash setup-agent-runner.sh          # opt out at setup time
+
+systemctl start agent-selfupdate.service          # force a check right now
+systemctl list-timers agent-selfupdate.timer      # when it next fires
+journalctl -u agent-selfupdate.service -f         # or: tail -f ~/agent-runner-data/self-update.log
+```
+
+Scope: the updater redeploys **code** (server, runners, poller, and the updater
+script itself — the next tick runs the new version). Changes to the systemd
+*unit files* are infra, not code, so after a commit that edits
+`setup-agent-runner.sh` / `setup-self-update.sh` unit definitions, re-run the
+relevant setup script once by hand. It refuses to run on a dirty working tree or
+a diverged branch, so local edits on the box are never clobbered.
 
 ## Safety & cost
 

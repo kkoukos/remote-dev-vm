@@ -91,6 +91,18 @@ EOF
 sudo systemctl daemon-reload
 sudo systemctl enable --now agent-runner.service agent-issue-poller.timer
 
+# Self-updater: a SEPARATE systemd timer that git-pulls this repo and redeploys
+# the control plane. Kept out of agent-runner.service on purpose so it can
+# recover the box even when the server is crash-looping on a bad commit. Opt out
+# with SELF_UPDATE=0.
+if [ "${SELF_UPDATE:-1}" != "0" ]; then
+  echo "==> Installing self-updater (separate systemd timer)"
+  SELF_UPDATE_REPO_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)" \
+  SELF_UPDATE_DEST="$DEST" \
+  AGENT_RUNNER_DATA="$DATA" \
+    bash "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/setup-self-update.sh"
+fi
+
 echo
 echo "================================================================"
 echo " agent-runner is up on 127.0.0.1:7777"
@@ -120,4 +132,9 @@ echo "        -d '{\"repo\":\"new-app\",\"create\":true,\"goal\":\"a CLI that ..
 echo
 echo " Issue queue: set REPOS in $DEST/.env, then issues labeled"
 echo " 'agent-goal' in those repos are picked up within a minute."
+echo
+echo " Self-updating: this box now polls its own repo and redeploys on push."
+echo " Merge a PR into main and it pulls + restarts within ~2 min."
+echo "   systemctl start agent-selfupdate.service   # force a check now"
+echo "   tail -f $DATA/self-update.log"
 echo "================================================================"
