@@ -42,6 +42,8 @@ agent-runner/runners/guard-hook.sh         PreToolUse hook backing those guardra
 ## Setup (once)
 
 > No VPS? The control plane also runs on Railway — see [DEPLOY_RAILWAY.md](DEPLOY_RAILWAY.md).
+> Want the full setup (VS Code tunnel included) on Azure instead of a generic
+> VPS provider? See [AZURE.md](AZURE.md).
 
 ```bash
 # 1. On a fresh Ubuntu 24.04 VPS, as root:
