@@ -1,9 +1,10 @@
 #!/usr/bin/env bash
 # setup-agent-runner.sh — install the control plane (run as the dev user, with sudo rights).
 #
-# Installs: ~/agent-runner (server + runners + poller), a token store (see
-# tokens-cli.mjs — no single shared secret), systemd service for the API +
-# 1-min timer for the GitHub issue poller.
+# Installs: ~/agent-runner (server + runners + pollers), a token store (see
+# tokens-cli.mjs — no single shared secret), systemd service for the API, a
+# 1-min timer for the GitHub issue poller, and a 5-min timer for the post-merge
+# eval poller.
 #
 # Usage:  bash setup-agent-runner.sh
 # Then:   edit ~/agent-runner/.env to set REPOS="owner/repo1 owner/repo2"
@@ -21,7 +22,7 @@ command -v jq >/dev/null || sudo apt-get install -y jq
 echo "==> Installing to $DEST"
 mkdir -p "$DEST"
 cp -r "$SRC_DIR/." "$DEST/"
-chmod +x "$DEST"/runners/*.sh "$DEST/issue-poller.sh" "$DEST/tokens-cli.mjs" "$DEST/set-env.mjs"
+chmod +x "$DEST"/runners/*.sh "$DEST/issue-poller.sh" "$DEST/eval-poller.sh" "$DEST/tokens-cli.mjs" "$DEST/set-env.mjs"
 
 if [ ! -f "$DEST/.env" ]; then
   cat > "$DEST/.env" <<EOF
@@ -30,10 +31,14 @@ PORT=7777
 REPOS_DIR=$HOME/repos
 # Repos the issue poller watches (space-separated owner/repo). Empty = poller idle.
 REPOS=
+# Repos the eval poller watches for merged PRs (space-separated owner/repo). Empty = poller idle.
+EVAL_REPOS=
 # Default runner for issue-queue jobs: claude | codex | opencode
 RUNNER=claude
 # Token the issue poller itself uses to call the local API (minted below).
 AGENT_RUNNER_TOKEN=
+# Token the eval poller uses to call the local API (minted below; falls back to AGENT_RUNNER_TOKEN).
+EVAL_POLLER_TOKEN=
 EOF
 fi
 chmod 600 "$DEST/.env"
@@ -43,8 +48,10 @@ MINTED=0
 if [ ! -f "$DATA/tokens.json" ]; then
   echo "==> Minting tokens"
   POLLER_TOKEN=$(node "$DEST/tokens-cli.mjs" add --name issue-poller --repos '*' | tail -n1)
+  EVAL_POLLER_TOKEN=$(node "$DEST/tokens-cli.mjs" add --name eval-poller --repos '*' | tail -n1)
   ADMIN_TOKEN=$(node "$DEST/tokens-cli.mjs" add --name admin --repos '*' | tail -n1)
   sed -i "s|^AGENT_RUNNER_TOKEN=.*|AGENT_RUNNER_TOKEN=$POLLER_TOKEN|" "$DEST/.env"
+  sed -i "s|^EVAL_POLLER_TOKEN=.*|EVAL_POLLER_TOKEN=$EVAL_POLLER_TOKEN|" "$DEST/.env"
   MINTED=1
 fi
 
@@ -88,8 +95,31 @@ OnUnitActiveSec=60
 WantedBy=timers.target
 EOF
 
+sudo tee /etc/systemd/system/agent-eval-poller.service >/dev/null <<EOF
+[Unit]
+Description=Agent Runner post-merge eval poller
+
+[Service]
+Type=oneshot
+User=$ME
+EnvironmentFile=$DEST/.env
+ExecStart=/usr/bin/bash $DEST/eval-poller.sh
+EOF
+
+sudo tee /etc/systemd/system/agent-eval-poller.timer >/dev/null <<EOF
+[Unit]
+Description=Run agent eval poller every 5 minutes
+
+[Timer]
+OnBootSec=300
+OnUnitActiveSec=300
+
+[Install]
+WantedBy=timers.target
+EOF
+
 sudo systemctl daemon-reload
-sudo systemctl enable --now agent-runner.service agent-issue-poller.timer
+sudo systemctl enable --now agent-runner.service agent-issue-poller.timer agent-eval-poller.timer
 
 # Self-updater: a SEPARATE systemd timer that git-pulls this repo and redeploys
 # the control plane. Kept out of agent-runner.service on purpose so it can
@@ -132,6 +162,10 @@ echo "        -d '{\"repo\":\"new-app\",\"create\":true,\"goal\":\"a CLI that ..
 echo
 echo " Issue queue: set REPOS in $DEST/.env, then issues labeled"
 echo " 'agent-goal' in those repos are picked up within a minute."
+echo
+echo " Self-evaluation: set EVAL_REPOS in $DEST/.env, then every PR merged"
+echo " in those repos is scored 0-5 and commented back within ~5 min."
+echo " Needs the /eval skill: cp skills/eval/SKILL.md ~/.claude/skills/eval/"
 echo
 echo " Self-updating: this box now polls its own repo and redeploys on push."
 echo " Merge a PR into main and it pulls + restarts within ~2 min."
