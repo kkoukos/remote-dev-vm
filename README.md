@@ -38,6 +38,7 @@ plan-watch.mjs          LOCAL cli — live-track a plan / follow each agent's lo
 skills/goal/SKILL.md    the /goal skill — existing repo, feature → PR
 skills/bootstrap/SKILL.md  the /bootstrap skill — empty repo → working v1
 skills/plan/SKILL.md    the /plan skill — idea → subplan tree, dispatched to the VM
+skills/eval/SKILL.md    the /eval skill — read-only scoring of a merged PR (see /eval below)
 agent-runner/           job server, runners, issue poller
 agent-runner/self-update.sh  pull-based self-updater (git pull + redeploy + restart)
 agent-runner/tokens-cli.mjs  mint/list/revoke per-caller API tokens (run on the VM)
@@ -61,11 +62,12 @@ claude                    # or: claude setup-token → export CLAUDE_CODE_OAUTH_
 gh auth login && gh auth setup-git
 git config --global user.name "Kostas" && git config --global user.email kostas@domicode.gr
 
-# 3. Install /goal, /bootstrap, and /plan globally:
-mkdir -p ~/.claude/skills/goal ~/.claude/skills/bootstrap ~/.claude/skills/plan
+# 3. Install /goal, /bootstrap, /plan, and /eval globally:
+mkdir -p ~/.claude/skills/goal ~/.claude/skills/bootstrap ~/.claude/skills/plan ~/.claude/skills/eval
 cp skills/goal/SKILL.md ~/.claude/skills/goal/
 cp skills/bootstrap/SKILL.md ~/.claude/skills/bootstrap/
 cp skills/plan/SKILL.md ~/.claude/skills/plan/
+cp skills/eval/SKILL.md ~/.claude/skills/eval/
 
 # 4. Control plane + tunnel:
 bash setup-agent-runner.sh      # prints an admin token (see Auth & tokens below)
@@ -240,6 +242,40 @@ callable directly) returns `CLAUDE.md`/`README.md`/manifest contents and a
 tracked-file listing for a repo already on the VM, or `{"exists":false}` — this is how
 `/plan` gathers context without needing a local clone of the repo it's planning
 against.
+
+## /eval: post-merge evaluation (read-only)
+
+`/eval` is the core building block for self-evaluation: point it at a repo already
+on the VM and a **merged** PR number, and it fetches the PR's diff (`gh pr diff`,
+falling back to `git show` of the merge commit), scores what the change accomplished
+on a 0–5 rubric (defined in `skills/eval/SKILL.md`), and lists concrete issues/risks
+— bugs, security, missing tests, performance, tradeoffs — each with a rough severity.
+The evaluation is posted back as a comment on the PR via `gh pr comment` and appended
+to an eval log at `${AGENT_RUNNER_DATA:-~/agent-runner-data}/evals/<repo>-<n>.md`.
+If the score is ≤ 2, it also opens a GitHub issue labeled `agent-eval` summarizing
+the concerns (deliberately *not* `agent-goal`, so the issue poller never picks it up
+as a job).
+
+It is **strictly read-only toward the codebase**: no branch, no commit, no push, no
+PR, no file changes — only the comment and, for low scores, the issue.
+
+`agent-runner/runners/eval.sh` is the matching runner: same arg/env contract as
+`claude.sh` (args: repo-dir, prompt-file; reads `MODEL`/`EFFORT`; loads the same
+`claude-settings.json` guardrails), but it runs `claude -p` with `/eval`, does not
+create a worktree, and does not expect a PR to come out the other end:
+
+```bash
+curl -H "Authorization: Bearer $TOKEN" -X POST https://code.example.com/agent/jobs \
+  -d '{"repo":"my-app","runner":"eval","goal":"evaluate merged PR #12"}'
+
+# or manually on the VM:
+~/agent-runner/runners/eval.sh ~/repos/my-app <(echo "evaluate merged PR #12")
+```
+
+Install the skill globally with `cp skills/eval/SKILL.md ~/.claude/skills/eval/`
+(after `mkdir -p ~/.claude/skills/eval` — included in [Setup](#setup-once) step 3).
+There is no poller or timer wired to this yet — triggering an eval automatically
+after a merge is a separate follow-up.
 
 ## Choosing model & effort
 
