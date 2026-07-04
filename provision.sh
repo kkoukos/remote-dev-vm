@@ -46,13 +46,16 @@ if ! id "$DEV_USER" &>/dev/null; then
   adduser --disabled-password --gecos "" "$DEV_USER"
   usermod -aG sudo "$DEV_USER"
   echo "$DEV_USER ALL=(ALL) NOPASSWD:ALL" > "/etc/sudoers.d/$DEV_USER"
-fi
-# Reuse root's SSH keys so you can `ssh dev@vps`
-if [ -f /root/.ssh/authorized_keys ]; then
-  mkdir -p "/home/$DEV_USER/.ssh"
-  cp /root/.ssh/authorized_keys "/home/$DEV_USER/.ssh/"
-  chown -R "$DEV_USER:$DEV_USER" "/home/$DEV_USER/.ssh"
-  chmod 700 "/home/$DEV_USER/.ssh" && chmod 600 "/home/$DEV_USER/.ssh/authorized_keys"
+  # Reuse root's SSH keys so you can `ssh dev@vps`. Only needed when we just
+  # created this user — on providers like Azure, --admin-username already set
+  # up a clean authorized_keys for it, and root's copy carries a forced
+  # "login disabled" command that would otherwise clobber it.
+  if [ -f /root/.ssh/authorized_keys ]; then
+    mkdir -p "/home/$DEV_USER/.ssh"
+    cp /root/.ssh/authorized_keys "/home/$DEV_USER/.ssh/"
+    chown -R "$DEV_USER:$DEV_USER" "/home/$DEV_USER/.ssh"
+    chmod 700 "/home/$DEV_USER/.ssh" && chmod 600 "/home/$DEV_USER/.ssh/authorized_keys"
+  fi
 fi
 
 echo "==> code-server"
