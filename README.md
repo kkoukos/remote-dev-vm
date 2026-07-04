@@ -198,6 +198,9 @@ are mutually exclusive — use `create` for a product that doesn't exist anywher
 
 ## /plan: subplan trees
 
+> Deep dive — the tree model, the full API, deploy steps, and troubleshooting are in
+> [PLAN.md](PLAN.md). This section is the short version.
+
 For anything bigger than one `/goal`, `/plan` (interactive, run wherever you're
 already talking to Claude — laptop, VS Code, Cowork, phone) turns a feature idea into
 a small **tree** of subplans and registers the whole tree with `agent-runner` in one
