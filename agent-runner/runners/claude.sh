@@ -25,4 +25,9 @@ FLAGS=(--permission-mode dontAsk --settings "$SETTINGS")
 [ -n "${MODEL:-}" ] && FLAGS+=(--model "$MODEL")
 [ -n "${EFFORT:-}" ] && FLAGS+=(--effort "$EFFORT")
 
+# BASE_BRANCH (worktree jobs only, set by server.mjs): forwarded as a plain
+# process env var so /goal's Bash tool subshells can see it and skip
+# re-branching from main — same passthrough mechanism as MODEL/EFFORT above.
+export BASE_BRANCH="${BASE_BRANCH:-}"
+
 exec claude -p "/$SKILL $(cat "$2")" "${FLAGS[@]}"

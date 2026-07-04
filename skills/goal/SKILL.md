@@ -24,6 +24,10 @@ GitHub PR. Work autonomously — do not stop to ask questions unless truly block
    package manager, test command, lint/typecheck commands, and branch conventions.
    If the repo has zero commits, this is the wrong skill — use `/bootstrap` instead.
 2. **Sync and branch.**
+   - If `$BASE_BRANCH` is set in the environment, the working tree has
+     already been branched from it by `agent-runner` (a worktree-isolated
+     job, possibly stacked on another subplan's branch) — skip the steps
+     below entirely and go straight to step 3.
    - `git fetch origin && git checkout main && git pull` (or `master`)
    - Create `feat/<short-kebab-slug>` from the up-to-date default branch.
 3. **Plan.** Break the goal into concrete steps. Search the codebase for existing
@@ -38,6 +42,8 @@ GitHub PR. Work autonomously — do not stop to ask questions unless truly block
    ```
    gh pr create --title "<concise title>" --body "<body>"
    ```
+   If `$BASE_BRANCH` is set, pass `--base "$BASE_BRANCH"` instead of the
+   default branch — this subplan's branch is stacked on top of it.
    PR body must include: **Summary** (what and why), **Changes** (bullet list of key
    changes), **Testing** (what you ran and results), and **Notes** (tradeoffs,
    follow-ups, anything needing reviewer attention).

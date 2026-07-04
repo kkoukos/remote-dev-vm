@@ -11,6 +11,9 @@ VS Code, from Claude Cowork, from your phone, from any agent — and it implemen
 feature and opens a GitHub PR. Never merges. Agents are pluggable (Claude Code today,
 Codex/OpenCode/whatever tomorrow). Can also go from nothing — `create:true` makes a
 brand-new GitHub repo and builds a working v1 into it (see [0→1](#0-1-new-products)).
+Bigger asks can be broken into a tree of subplans and dispatched together —
+independent ones run in parallel, dependent ones stack — see
+[`/plan`](#plan-subplan-trees).
 
 ## Architecture
 
@@ -33,6 +36,7 @@ run-goal.sh             manual detached run via tmux
 vm-cli.mjs              LOCAL cli (runs on your laptop) — configure + mint tokens over ssh
 skills/goal/SKILL.md    the /goal skill — existing repo, feature → PR
 skills/bootstrap/SKILL.md  the /bootstrap skill — empty repo → working v1
+skills/plan/SKILL.md    the /plan skill — idea → subplan tree, dispatched to the VM
 agent-runner/           job server, runners, issue poller
 agent-runner/self-update.sh  pull-based self-updater (git pull + redeploy + restart)
 agent-runner/tokens-cli.mjs  mint/list/revoke per-caller API tokens (run on the VM)
@@ -56,10 +60,11 @@ claude                    # or: claude setup-token → export CLAUDE_CODE_OAUTH_
 gh auth login && gh auth setup-git
 git config --global user.name "Kostas" && git config --global user.email kostas@domicode.gr
 
-# 3. Install /goal and /bootstrap globally:
-mkdir -p ~/.claude/skills/goal ~/.claude/skills/bootstrap
+# 3. Install /goal, /bootstrap, and /plan globally:
+mkdir -p ~/.claude/skills/goal ~/.claude/skills/bootstrap ~/.claude/skills/plan
 cp skills/goal/SKILL.md ~/.claude/skills/goal/
 cp skills/bootstrap/SKILL.md ~/.claude/skills/bootstrap/
+cp skills/plan/SKILL.md ~/.claude/skills/plan/
 
 # 4. Control plane + tunnel:
 bash setup-agent-runner.sh      # prints an admin token (see Auth & tokens below)
@@ -139,9 +144,12 @@ auto-clone if the repo isn't on the VM yet, or `"create":true` to make a brand-n
 GitHub repo instead (see 0→1 below). Add `"model"` / `"effort"` to control strength —
 see [Choosing model & effort](#choosing-model--effort).
 
-Only one job per repo runs at a time (a second request against a busy repo is
-rejected, so two agents never race on the same git working tree), and each token is
-capped at `MAX_CONCURRENT_PER_TOKEN` (default 5) concurrent jobs.
+Only one **non-worktree** job per repo runs at a time (a second plain request against
+a busy repo is rejected, so two agents never race on the same shared git working
+tree) — pass `"branch"` to opt a job into its own isolated worktree instead (see
+[`/plan`](#plan-subplan-trees) below), and those run concurrently with each other and
+with the primary job. Each token is capped at `MAX_CONCURRENT_PER_TOKEN` (default 5)
+concurrent jobs regardless.
 
 The API listens on 127.0.0.1 only. To expose it, add to `/etc/caddy/Caddyfile`
 (inside your site block) and `systemctl reload caddy`:
@@ -187,6 +195,47 @@ Optional fields: `"visibility"` (`private` default, or `public`/`internal`), `"o
 (create under a GitHub org instead of your personal account). `create` and `gitUrl`
 are mutually exclusive — use `create` for a product that doesn't exist anywhere yet,
 `gitUrl` to bring an existing repo onto the VM.
+
+## /plan: subplan trees
+
+For anything bigger than one `/goal`, `/plan` (interactive, run wherever you're
+already talking to Claude — laptop, VS Code, Cowork, phone) turns a feature idea into
+a small **tree** of subplans and registers the whole tree with `agent-runner` in one
+call:
+
+```bash
+curl -H "Authorization: Bearer $TOKEN" -X POST https://code.example.com/agent/plans \
+  -d '{"repo":"my-app","subplans":[
+        {"slug":"api",      "goal":"add a /settings API endpoint"},
+        {"slug":"ui",       "goal":"add a settings page that calls it", "dependsOn":"api"}
+      ]}'
+
+curl -H "Authorization: Bearer $TOKEN" https://code.example.com/agent/plans/<planId>
+```
+
+Each subplan may `dependsOn` **at most one** other slug — subplans form a tree, not a
+general dependency graph, because a stacked git branch only has one base. A root
+subplan (no `dependsOn`) branches off the repo's default branch; a subplan that
+`dependsOn` another gets its worktree branched off the **parent's branch** once the
+parent's job finishes, and opens its PR with `--base <parent-branch>` (a stacked PR)
+— so review/merge order should follow the tree: parents before children.
+
+Under the hood, each subplan is a normal job with `"branch":"feat/<slug>"` — its own
+git worktree at `REPOS_DIR/.worktrees/<repo>/feat/<slug>`, so independent subplans run
+concurrently instead of queueing behind `repoBusy`. `agent-runner` itself keeps
+dispatching dependents on a timer as their parents' jobs finish — **the caller does
+not need to stay connected**; register the plan, walk away, and check back later with
+`GET /plans/<planId>`. Nothing auto-merges, same as `/goal`.
+
+For a brand-new product (repo doesn't exist on the VM yet), exactly one subplan sets
+`"create":true` or `"gitUrl"`; every other subplan is automatically made to depend on
+it, so nothing branches off a repo that doesn't have a first commit yet.
+
+`GET /repos/<repo>/context` (used internally by `/plan`'s exploration step, but
+callable directly) returns `CLAUDE.md`/`README.md`/manifest contents and a
+tracked-file listing for a repo already on the VM, or `{"exists":false}` — this is how
+`/plan` gathers context without needing a local clone of the repo it's planning
+against.
 
 ## Choosing model & effort
 
