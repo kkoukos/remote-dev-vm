@@ -34,6 +34,7 @@ setup-self-update.sh    self-updater: separate systemd timer that git-pulls + re
 setup-tunnel.sh         VS Code Remote Tunnel → local VS Code attach + Live Share
 run-goal.sh             manual detached run via tmux
 vm-cli.mjs              LOCAL cli (runs on your laptop) — configure + mint tokens over ssh
+plan-watch.mjs          LOCAL cli — live-track a plan / follow each agent's log over the HTTP API
 skills/goal/SKILL.md    the /goal skill — existing repo, feature → PR
 skills/bootstrap/SKILL.md  the /bootstrap skill — empty repo → working v1
 skills/plan/SKILL.md    the /plan skill — idea → subplan tree, dispatched to the VM

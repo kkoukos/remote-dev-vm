@@ -180,6 +180,32 @@ A transient dispatch hiccup (capacity limit, a git race) doesn't fail a subplan 
 `pending` with a `lastError` recorded and is retried on the next tick. **Only an actual job
 failure blocks dependents.**
 
+## Tracking it live — `plan-watch.mjs`
+
+`GET /plans/:id` and `GET /jobs/:id/log` are the raw feed; `plan-watch.mjs` is a
+small, read-only local CLI (a sibling to `vm-cli.mjs`) that renders them as a live
+command-line view. It only ever GETs — it can't start or cancel anything. Like
+`vm-cli.mjs` it never stores your token; pass it per run or via env:
+
+```bash
+export AGENT_URL=https://code.example.com/agent    # include the /agent path prefix
+export AGENT_TOKEN=<a token scoped to the repo>
+
+./plan-watch.mjs plan <planId>        # live tree — refreshes until every subplan is terminal
+./plan-watch.mjs logs <jobId>         # follow ONE agent's build log (Ctrl-C to stop)
+./plan-watch.mjs jobs                 # recent jobs visible to this token
+./plan-watch.mjs job  <jobId>         # one-shot status + last log lines
+```
+
+The `plan` view is the overview — the subplan tree with each node's status
+(`○ pending` · `◐ running` · `● done` · `✗ failed` · `⊘ blocked`), branch → base,
+PR URL once opened, and a `retrying: …` line for a subplan stuck on a transient
+dispatch error. It prints the exact `logs <jobId>` command for each dispatched
+subplan, so the natural workflow is two panes: `plan <planId>` for "what the plan is
+doing," and `logs <jobId>` to watch a specific agent build. Add `--once` for a single
+snapshot (scripts / non-TTY), or `--interval <seconds>` to change the poll cadence
+(default 5). It polls the same endpoints you'd curl — it just draws them nicely.
+
 ## Merging: order matters
 
 Nothing auto-merges — same as `/goal`. But because dependent PRs are **stacked** (each
