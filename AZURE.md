@@ -14,9 +14,9 @@ real VM has systemd + sudo, so `setup-tunnel.sh` works here.
 ## 2. Create the VM
 
 ```bash
-RG=claude-vm-rg
+RG=remote-dev-vm-rg
 LOCATION=eastus
-VM=claude-vm
+VM=remote-dev-vm
 
 az group create --name $RG --location $LOCATION
 
@@ -65,13 +65,13 @@ few minutes, and Caddy needs it resolvable to issue a cert in step 4).
 ## 4. Provision
 
 Azure doesn't allow direct root SSH login (unlike some VPS providers) — you get
-a sudo-enabled admin user instead. Copy the repo over and run `provision.sh` via
-`sudo`:
+a sudo-enabled admin user instead. Clone the repo on the VM and run
+`provision.sh` via `sudo`:
 
 ```bash
-scp -r . dev@$IP:~/claude-vm
 ssh dev@$IP
-cd ~/claude-vm
+git clone https://github.com/kkoukos/remote-dev-vm
+cd remote-dev-vm
 sudo bash -c 'DOMAIN=code.example.com bash provision.sh'   # DOMAIN optional
 ```
 
@@ -88,23 +88,23 @@ gh auth login && gh auth setup-git
 git config --global user.name "Kostas" && git config --global user.email kostas@domicode.gr
 
 mkdir -p ~/.claude/skills/goal ~/.claude/skills/bootstrap
-cp ~/claude-vm/skills/goal/SKILL.md ~/.claude/skills/goal/
-cp ~/claude-vm/skills/bootstrap/SKILL.md ~/.claude/skills/bootstrap/
+cp ~/remote-dev-vm/skills/goal/SKILL.md ~/.claude/skills/goal/
+cp ~/remote-dev-vm/skills/bootstrap/SKILL.md ~/.claude/skills/bootstrap/
 
-cd ~/claude-vm
+cd ~/remote-dev-vm
 bash setup-agent-runner.sh      # prints an admin token
 bash setup-tunnel.sh            # GitHub device-flow login
 ```
 
 ## 5. Connect
 
-- **VS Code**: Remote Explorer → Tunnels → `claude-vm` (or whatever
+- **VS Code**: Remote Explorer → Tunnels → `remote-dev-vm` (or whatever
   `TUNNEL_NAME` you set) — full marketplace, Live Share works from here.
 - **Browser**: `https://code.example.com` if `DOMAIN` was set, otherwise
   `ssh -L 8080:127.0.0.1:8080 dev@$IP` then `http://localhost:8080`.
 - **Agent API**: still `127.0.0.1:7777` on the box. To expose it externally,
   add to `/etc/caddy/Caddyfile` (needs `DOMAIN` set) and `sudo systemctl reload
-  caddy`:
+caddy`:
   ```
   handle_path /agent/* {
       reverse_proxy 127.0.0.1:7777

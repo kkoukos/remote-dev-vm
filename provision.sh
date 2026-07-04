@@ -77,7 +77,7 @@ if [ -n "$DOMAIN" ]; then
   apt-get install -y debian-keyring debian-archive-keyring apt-transport-https
   curl -1sLf 'https://dl.cloudsmith.io/public/caddy/stable/gpg.key' | gpg --dearmor -o /etc/apt/keyrings/caddy.gpg
   curl -1sLf 'https://dl.cloudsmith.io/public/caddy/stable/debian.deb.txt' > /etc/apt/sources.list.d/caddy.list
-  sed -i 's|^deb |deb [signed-by=/etc/apt/keyrings/caddy.gpg] |' /etc/apt/sources.list.d/caddy.list
+  sed -i 's|signed-by=[^]]*|signed-by=/etc/apt/keyrings/caddy.gpg|' /etc/apt/sources.list.d/caddy.list
   apt-get update -y && apt-get install -y caddy
   cat > /etc/caddy/Caddyfile <<EOF
 $DOMAIN {
