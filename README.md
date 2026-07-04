@@ -38,6 +38,7 @@ plan-watch.mjs          LOCAL cli — live-track a plan / follow each agent's lo
 skills/goal/SKILL.md    the /goal skill — existing repo, feature → PR
 skills/bootstrap/SKILL.md  the /bootstrap skill — empty repo → working v1
 skills/plan/SKILL.md    the /plan skill — idea → subplan tree, dispatched to the VM
+skills/eval/SKILL.md    the /eval skill — read-only scoring of a merged PR (see /eval below)
 agent-runner/           job server, runners, issue poller
 agent-runner/self-update.sh  pull-based self-updater (git pull + redeploy + restart)
 agent-runner/tokens-cli.mjs  mint/list/revoke per-caller API tokens (run on the VM)
@@ -61,11 +62,12 @@ claude                    # or: claude setup-token → export CLAUDE_CODE_OAUTH_
 gh auth login && gh auth setup-git
 git config --global user.name "Kostas" && git config --global user.email kostas@domicode.gr
 
-# 3. Install /goal, /bootstrap, and /plan globally:
-mkdir -p ~/.claude/skills/goal ~/.claude/skills/bootstrap ~/.claude/skills/plan
+# 3. Install /goal, /bootstrap, /plan, and /eval globally:
+mkdir -p ~/.claude/skills/goal ~/.claude/skills/bootstrap ~/.claude/skills/plan ~/.claude/skills/eval
 cp skills/goal/SKILL.md ~/.claude/skills/goal/
 cp skills/bootstrap/SKILL.md ~/.claude/skills/bootstrap/
 cp skills/plan/SKILL.md ~/.claude/skills/plan/
+cp skills/eval/SKILL.md ~/.claude/skills/eval/
 
 # 4. Control plane + tunnel:
 bash setup-agent-runner.sh      # prints an admin token (see Auth & tokens below)
@@ -241,6 +243,40 @@ tracked-file listing for a repo already on the VM, or `{"exists":false}` — thi
 `/plan` gathers context without needing a local clone of the repo it's planning
 against.
 
+## /eval: post-merge evaluation (read-only)
+
+`/eval` is the core building block for self-evaluation: point it at a repo already
+on the VM and a **merged** PR number, and it fetches the PR's diff (`gh pr diff`,
+falling back to `git show` of the merge commit), scores what the change accomplished
+on a 0–5 rubric (defined in `skills/eval/SKILL.md`), and lists concrete issues/risks
+— bugs, security, missing tests, performance, tradeoffs — each with a rough severity.
+The evaluation is posted back as a comment on the PR via `gh pr comment` and appended
+to an eval log at `${AGENT_RUNNER_DATA:-~/agent-runner-data}/evals/<repo>-<n>.md`.
+If the score is ≤ 2, it also opens a GitHub issue labeled `agent-eval` summarizing
+the concerns (deliberately *not* `agent-goal`, so the issue poller never picks it up
+as a job).
+
+It is **strictly read-only toward the codebase**: no branch, no commit, no push, no
+PR, no file changes — only the comment and, for low scores, the issue.
+
+`agent-runner/runners/eval.sh` is the matching runner: same arg/env contract as
+`claude.sh` (args: repo-dir, prompt-file; reads `MODEL`/`EFFORT`; loads the same
+`claude-settings.json` guardrails), but it runs `claude -p` with `/eval`, does not
+create a worktree, and does not expect a PR to come out the other end:
+
+```bash
+curl -H "Authorization: Bearer $TOKEN" -X POST https://code.example.com/agent/jobs \
+  -d '{"repo":"my-app","runner":"eval","goal":"evaluate merged PR #12"}'
+
+# or manually on the VM:
+~/agent-runner/runners/eval.sh ~/repos/my-app <(echo "evaluate merged PR #12")
+```
+
+Install the skill globally with `cp skills/eval/SKILL.md ~/.claude/skills/eval/`
+(after `mkdir -p ~/.claude/skills/eval` — included in [Setup](#setup-once) step 3).
+Triggering an eval automatically after every merge is wired up in
+[Self-evaluation](#self-evaluation) below.
+
 ## Choosing model & effort
 
 Pass `"model"` (`opus`/`sonnet`/`haiku`, or a full ID like `claude-opus-4-8`) and
@@ -259,6 +295,51 @@ repo-dir, prompt-file; reads `$FRESH`/`$MODEL`/`$EFFORT` from the environment) a
 `"runner":"mytool"` per job — or set `RUNNER=` in `.env` for the issue queue.
 Non-Claude runners embed the PR/bootstrap instructions in the prompt since they can't
 use the `/goal` or `/bootstrap` skills.
+
+## Self-evaluation
+
+The box grades its own work. `agent-runner/eval-poller.sh` runs on a **5-min**
+systemd timer — `agent-eval-poller.timer`, installed by `setup-agent-runner.sh`
+alongside the issue poller — and for every repo in `EVAL_REPOS` lists the PRs
+merged to the default branch since a per-repo cursor, enqueueing one read-only
+`eval` job per new PR on the local API. Each job runs
+[`/eval`](#eval-post-merge-evaluation-read-only): it scores what the PR changed on
+a 0–5 rubric, posts the score plus concrete issues/risks as a comment on the merged
+PR, appends the same record to an eval log at
+`${AGENT_RUNNER_DATA:-~/agent-runner-data}/evals/<repo>-<n>.md`, and — only when the
+score is **≤ 2** — opens a GitHub issue labeled `agent-eval` so a human (or a
+follow-up `/goal`) can act on it. Nothing merges, branches, or edits the code: the
+poller dispatches, `/eval` comments.
+
+The timer runs at 5 min rather than the issue poller's 1 min because merges are
+infrequent. The first time the poller sees a repo it starts the clock at *now*, so
+it evaluates PRs merged from then on and never grades the entire back-catalog; each
+merged PR is dispatched once (idempotent per PR number), and a repo that's busy with
+another job is simply retried on the next tick.
+
+Enable it by listing the repos to watch in `~/agent-runner/.env` (empty = idle):
+
+```bash
+# ~/agent-runner/.env — space-separated owner/repo, same format as REPOS
+EVAL_REPOS="me/my-app me/other-app"
+
+systemctl start agent-eval-poller.service       # force a check right now
+systemctl list-timers agent-eval-poller.timer   # when it next fires
+```
+
+`setup-agent-runner.sh` mints a dedicated `EVAL_POLLER_TOKEN` for the poller (it
+falls back to `AGENT_RUNNER_TOKEN` if that key is left empty). The `/eval` skill
+must also be installed globally on the box — `cp skills/eval/SKILL.md
+~/.claude/skills/eval/` (included in [Setup](#setup-once) step 3) — since the eval
+runner shells out to `claude -p "/eval …"` and can't score anything without it.
+
+**Caveat — the skill is not self-updated.** The [self-updater](#self-updating)
+redeploys everything under `agent-runner/` — including `eval-poller.sh` and
+`runners/eval.sh` — automatically on the next merge. It does **not** touch
+`~/.claude/skills/eval/`, which lives under `skills/`, outside the deploy tree, so
+after changing the rubric or workflow in `skills/eval/SKILL.md` you must re-run the
+`cp` above by hand (same as re-running the setup script after editing systemd unit
+definitions — see the [Self-updating](#self-updating) scope note).
 
 ## Self-updating
 
