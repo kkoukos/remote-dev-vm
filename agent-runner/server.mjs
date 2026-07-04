@@ -28,6 +28,7 @@
 //   GET  /jobs/:id/log         full log (text)
 //   POST /jobs/:id/cancel      SIGTERM the job's process group
 //   GET  /health               no auth, liveness
+//   GET  /ping                 no auth, liveness (returns "pong")
 //
 // A token only sees/controls jobs against repos it's scoped for. Every job
 // start/cancel and every rejected auth attempt is appended to audit.log.
@@ -206,6 +207,10 @@ const json = (res, code, obj) => {
 const server = http.createServer(async (req, res) => {
   const url = new URL(req.url, "http://x");
   if (req.method === "GET" && url.pathname === "/health") return json(res, 200, { ok: true });
+  if (req.method === "GET" && url.pathname === "/ping") {
+    res.writeHead(200, { "content-type": "text/plain" });
+    return res.end("pong");
+  }
 
   const tokens = loadTokens(TOKENS_FILE);
   const bearer = (req.headers.authorization || "").replace(/^Bearer /, "");
